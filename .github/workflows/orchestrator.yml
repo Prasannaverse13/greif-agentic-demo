@@ -119,7 +119,7 @@ jobs:
       branch_name: ${{ steps.create_pr.outputs.branch_name }}
 
     steps:
-      # Step 1 — create the branch via API and classify the change type
+      # ── Step 1: Create branch via API + classify change type ──────────────────
       - name: Create branch and classify change
         id: setup
         uses: actions/github-script@v7
@@ -133,6 +133,7 @@ jobs:
             const issueTitle  = process.env.ISSUE_TITLE;
             const issueBody   = process.env.ISSUE_BODY;
             const text        = `${issueTitle} ${issueBody}`.toLowerCase();
+            const combined    = `${issueTitle} ${issueBody}`;
             const branchName  = `auto/ticket-${issueNumber}`;
 
             // ── Create branch off main ─────────────────────────────────────
@@ -152,43 +153,66 @@ jobs:
               console.log(`Branch ${branchName} already exists — continuing.`);
             }
 
-            // ── Classify change type ───────────────────────────────────────
-            // footer_link  : issue mentions "footer" + ("link" or "investor")
-            // hero_headline: issue mentions ("hero" or "h1") + ("headline" or "title" or "heading")
+            // ── Pattern detection (first match wins) ───────────────────────
+            //   A  footer_link   : "footer" + ("link" OR "investor")
+            //   B  hero_headline : ("hero" OR "h1") + ("headline" OR "title" OR "heading")
+            //   C  add_section   : "add section" OR "new section" OR "create section"
             const isFooterLink   = text.includes('footer') &&
                                    (text.includes('link') || text.includes('investor'));
             const isHeroHeadline = (text.includes('hero') || text.includes('h1')) &&
                                    (text.includes('headline') || text.includes('title') || text.includes('heading'));
+            const isAddSection   = /\b(add|new|create|insert)\s+section\b/.test(text);
 
-            let changeType  = 'generic';
-            let newHeadline = '';
+            let changeType    = 'generic';
+            let newHeadline   = '';
+            let sectionTitle  = '';
+            let targetPage    = 'index.html';
 
             if (isFooterLink) {
+              // ── Pattern A ──────────────────────────────────────────────────
               changeType = 'footer_link';
+
             } else if (isHeroHeadline) {
-              changeType = 'hero_headline';
-              // Extract quoted text from body first, then fall back to full title
-              const combined = `${issueTitle} ${issueBody}`;
-              const quoted   = combined.match(/["'""]([^"'""\n]{3,120})["'""]/) ||
-                               combined.match(/(?:to|with|:\s*)['""]?([A-Z][^'""\n]{3,120})/);
-              newHeadline    = quoted ? quoted[1].trim() : issueTitle;
+              // ── Pattern B ──────────────────────────────────────────────────
+              changeType   = 'hero_headline';
+              // Prefer text in quotes; fall back to text after "to:" / "with:"; last resort: full title
+              const quoted = combined.match(/[""']([^""'\n]{3,120})[""']/) ||
+                             combined.match(/(?:to|with)\s*:\s*([A-Z][^\n]{3,120})/i);
+              newHeadline  = quoted ? quoted[1].trim() : issueTitle;
+
+            } else if (isAddSection) {
+              // ── Pattern C ──────────────────────────────────────────────────
+              changeType   = 'add_section';
+              // Derive human-readable section title by stripping directive words
+              sectionTitle = issueTitle
+                .replace(/\b(add|create|new|insert)\s+(?:a\s+)?section\b/gi, '')
+                .replace(/\b(?:on|to|in|for|the)\b/gi, '')
+                .replace(/\s+/g, ' ').trim() || issueTitle;
+              // Target page from keywords; default to homepage
+              if      (text.includes('about'))    targetPage = 'about.html';
+              else if (text.includes('products')) targetPage = 'products.html';
+              else                                targetPage = 'index.html';
             }
 
-            console.log(`change_type: ${changeType}`);
-            if (newHeadline) console.log(`new_headline: ${newHeadline}`);
+            console.log(`change_type:   ${changeType}`);
+            console.log(`target_page:   ${targetPage}`);
+            if (newHeadline)  console.log(`new_headline:  ${newHeadline}`);
+            if (sectionTitle) console.log(`section_title: ${sectionTitle}`);
 
-            core.setOutput('branch_name',  branchName);
-            core.setOutput('change_type',  changeType);
-            core.setOutput('new_headline', newHeadline);
+            core.setOutput('branch_name',   branchName);
+            core.setOutput('change_type',   changeType);
+            core.setOutput('new_headline',  newHeadline);
+            core.setOutput('section_title', sectionTitle);
+            core.setOutput('target_page',   targetPage);
 
-      # Step 2 — check out the freshly-created branch so we can edit files
+      # ── Step 2: Checkout the new branch ───────────────────────────────────────
       - name: Checkout branch
         uses: actions/checkout@v4
         with:
           ref: ${{ steps.setup.outputs.branch_name }}
 
-      # Step 3a — footer link: insert <a href="/investors"> before </footer>
-      - name: Apply footer link change
+      # ── Step 3A: Pattern A — insert Investor Relations link before </footer> ──
+      - name: "Pattern A: Apply footer link"
         if: steps.setup.outputs.change_type == 'footer_link'
         run: |
           python3 << 'PYEOF'
@@ -201,23 +225,25 @@ jobs:
               try:
                   with open(path, 'r', encoding='utf-8') as f:
                       src = f.read()
-                  if '</footer>' not in src:
-                      print(f'  No </footer> in {path} — skipping', file=sys.stderr)
-                      continue
-                  if LINK in src:
-                      print(f'  Link already present in {path} — skipping')
-                      continue
-                  # Insert the link on its own line immediately before </footer>
-                  src = src.replace('</footer>', f'  {LINK}\n</footer>', 1)
-                  with open(path, 'w', encoding='utf-8') as f:
-                      f.write(src)
-                  print(f'  Updated {path}')
               except FileNotFoundError:
                   print(f'  {path} not found — skipping', file=sys.stderr)
+                  continue
+
+              if '</footer>' not in src:
+                  print(f'  No </footer> in {path} — skipping', file=sys.stderr)
+                  continue
+              if LINK in src:
+                  print(f'  Link already present in {path} — skipping')
+                  continue
+
+              src = src.replace('</footer>', f'  {LINK}\n</footer>', 1)
+              with open(path, 'w', encoding='utf-8') as f:
+                  f.write(src)
+              print(f'  Updated {path}')
           PYEOF
 
-      # Step 3b — hero headline: swap the first <h1> text in index.html
-      - name: Apply hero headline change
+      # ── Step 3B: Pattern B — replace first <h1> text in index.html ────────────
+      - name: "Pattern B: Apply hero headline"
         if: steps.setup.outputs.change_type == 'hero_headline'
         env:
           NEW_HEADLINE: ${{ steps.setup.outputs.new_headline }}
@@ -235,7 +261,7 @@ jobs:
               print(f'{path} not found', file=sys.stderr)
               sys.exit(1)
 
-          # Replace the text content of the first <h1> tag (handles multi-line)
+          # Replace text content of the first <h1> — DOTALL handles multi-line tags
           updated, n = re.subn(
               r'(<h1(?:\s[^>]*)?>).*?(</h1>)',
               rf'\g<1>{new_headline}\2',
@@ -247,14 +273,64 @@ jobs:
 
           with open(path, 'w', encoding='utf-8') as f:
               f.write(updated)
-          print(f'Updated hero headline in {path}: "{new_headline}"')
+          print(f'Updated <h1> in {path} → "{new_headline}"')
           PYEOF
 
-      # Step 4 — commit and push whatever changed
+      # ── Step 3C: Pattern C — insert new <section> before </main> or </body> ───
+      - name: "Pattern C: Add new section"
+        if: steps.setup.outputs.change_type == 'add_section'
+        env:
+          TARGET_PAGE:   ${{ steps.setup.outputs.target_page }}
+          SECTION_TITLE: ${{ steps.setup.outputs.section_title }}
+          ISSUE_BODY:    ${{ needs.triage.outputs.issue_body }}
+        run: |
+          python3 << 'PYEOF'
+          import os, sys, textwrap
+
+          target_page   = os.environ['TARGET_PAGE']
+          section_title = os.environ['SECTION_TITLE'].strip()
+          issue_body    = os.environ.get('ISSUE_BODY', '').strip()
+
+          # Build a tidy section block (2-space indent to match existing HTML style)
+          section_html = textwrap.dedent(f"""\
+
+          <section class="auto-section">
+            <div class="container">
+              <h2>{section_title}</h2>
+              <p>{issue_body or 'Content to be added here.'}</p>
+            </div>
+          </section>
+          """)
+
+          try:
+              with open(target_page, 'r', encoding='utf-8') as f:
+                  src = f.read()
+          except FileNotFoundError:
+              print(f'{target_page} not found', file=sys.stderr)
+              sys.exit(1)
+
+          # Insert before </main> first; fall back to </body>
+          inserted = False
+          for anchor in ['</main>', '</body>']:
+              if anchor in src:
+                  src = src.replace(anchor, section_html + anchor, 1)
+                  inserted = True
+                  print(f'Inserted <section> before {anchor} in {target_page}')
+                  break
+
+          if not inserted:
+              print(f'Could not find </main> or </body> in {target_page}', file=sys.stderr)
+              sys.exit(0)
+
+          with open(target_page, 'w', encoding='utf-8') as f:
+              f.write(src)
+          PYEOF
+
+      # ── Step 4: Commit + push ──────────────────────────────────────────────────
       - name: Commit and push changes
         env:
           BRANCH_NAME:  ${{ steps.setup.outputs.branch_name }}
-          ISSUE_NUMBER: ${{ needs.triage.outputs.issue_number }}
+          ISSUE_TITLE:  ${{ needs.triage.outputs.issue_title }}
           CHANGE_TYPE:  ${{ steps.setup.outputs.change_type }}
         run: |
           git config user.name  "Greif Orchestrator"
@@ -263,41 +339,48 @@ jobs:
           if git diff --staged --quiet; then
             echo "Nothing changed — working tree is clean."
           else
-            git commit -m "auto(${CHANGE_TYPE}): apply changes for issue #${ISSUE_NUMBER}"
+            git commit -m "Auto: ${ISSUE_TITLE}"
             git push origin "${BRANCH_NAME}"
-            echo "Pushed to ${BRANCH_NAME}"
+            echo "Pushed changes to ${BRANCH_NAME}"
           fi
 
-      # Step 5 — open a draft PR (or find the existing one)
+      # ── Step 5: Open draft PR (idempotent — looks up existing PR on 422) ──────
       - name: Open PR
         id: create_pr
         uses: actions/github-script@v7
         env:
-          ISSUE_NUMBER: ${{ needs.triage.outputs.issue_number }}
-          ISSUE_TITLE:  ${{ needs.triage.outputs.issue_title }}
-          ISSUE_BODY:   ${{ needs.triage.outputs.issue_body }}
-          COMPLEXITY:   ${{ needs.triage.outputs.complexity }}
-          BRANCH_NAME:  ${{ steps.setup.outputs.branch_name }}
-          CHANGE_TYPE:  ${{ steps.setup.outputs.change_type }}
-          NEW_HEADLINE: ${{ steps.setup.outputs.new_headline }}
+          ISSUE_NUMBER:  ${{ needs.triage.outputs.issue_number }}
+          ISSUE_TITLE:   ${{ needs.triage.outputs.issue_title }}
+          ISSUE_BODY:    ${{ needs.triage.outputs.issue_body }}
+          COMPLEXITY:    ${{ needs.triage.outputs.complexity }}
+          BRANCH_NAME:   ${{ steps.setup.outputs.branch_name }}
+          CHANGE_TYPE:   ${{ steps.setup.outputs.change_type }}
+          NEW_HEADLINE:  ${{ steps.setup.outputs.new_headline }}
+          SECTION_TITLE: ${{ steps.setup.outputs.section_title }}
+          TARGET_PAGE:   ${{ steps.setup.outputs.target_page }}
         with:
           script: |
-            const issueNumber = process.env.ISSUE_NUMBER;
-            const issueTitle  = process.env.ISSUE_TITLE;
-            const issueBody   = process.env.ISSUE_BODY;
-            const complexity  = process.env.COMPLEXITY;
-            const branchName  = process.env.BRANCH_NAME;
-            const changeType  = process.env.CHANGE_TYPE;
-            const newHeadline = process.env.NEW_HEADLINE;
+            const issueNumber  = process.env.ISSUE_NUMBER;
+            const issueTitle   = process.env.ISSUE_TITLE;
+            const issueBody    = process.env.ISSUE_BODY;
+            const complexity   = process.env.COMPLEXITY;
+            const branchName   = process.env.BRANCH_NAME;
+            const changeType   = process.env.CHANGE_TYPE;
+            const newHeadline  = process.env.NEW_HEADLINE;
+            const sectionTitle = process.env.SECTION_TITLE;
+            const targetPage   = process.env.TARGET_PAGE;
 
             const changeDesc = {
               footer_link:
-                'Inserted `<a href="/investors">Investor Relations</a>` before `</footer>` ' +
-                'in `index.html`, `about.html`, and `products.html`.',
+                'Inserted `<a href="/investors">Investor Relations</a>` immediately before ' +
+                '`</footer>` in **`index.html`**, **`about.html`**, and **`products.html`**.',
               hero_headline:
-                `Replaced the first \`<h1>\` text in \`index.html\` with: **"${newHeadline}"**`,
+                `Replaced the first \`<h1>\` text in **\`index.html\`** with:\n> "${newHeadline}"`,
+              add_section:
+                `Inserted a new \`<section class="auto-section">\` block before \`</main>\` ` +
+                `in **\`${targetPage}\`** with heading: **"${sectionTitle}"**`,
               generic:
-                'Applied generic scaffolding — replace with real implementation before merging.',
+                '_No pattern matched — branch and PR created for manual implementation._',
             }[changeType] || '';
 
             const prBody = [
@@ -305,8 +388,7 @@ jobs:
               '',
               '> Auto-generated by the **Issue Orchestrator** workflow.',
               '',
-              `**Complexity:** \`${complexity}\`  `,
-              `**Change type:** \`${changeType}\``,
+              `**Complexity:** \`${complexity}\`   **Change type:** \`${changeType}\``,
               '',
               '## What changed',
               '',
@@ -339,6 +421,7 @@ jobs:
               console.log(`PR created: ${prUrl}`);
             } catch (err) {
               if (err.status === 422) {
+                // PR already exists for this branch — look it up
                 const { data: prs } = await github.rest.pulls.list({
                   owner: context.repo.owner, repo: context.repo.repo,
                   head: `${context.repo.owner}:${branchName}`,

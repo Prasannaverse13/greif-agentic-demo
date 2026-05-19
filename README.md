@@ -62,3 +62,7 @@ greif-agentic-demo/
 ## Disclaimer
 
 This is a demonstration project for an agentic software development lifecycle pipeline. It is not affiliated with or endorsed by Greif, Inc.
+
+## Branch Protection Test
+
+> This line was added on branch `test-branch-protection` to verify that GitHub branch protection rules block direct merges without an approved pull request review.

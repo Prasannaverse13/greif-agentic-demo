@@ -1,0 +1,251 @@
+name: Issue Orchestrator
+
+on:
+  issues:
+    types: [opened, edited]
+
+permissions:
+  issues: write
+  contents: write
+  pull-requests: write
+
+jobs:
+  # ── Job 1: Triage ────────────────────────────────────────────────────────────
+  triage:
+    runs-on: ubuntu-latest
+    outputs:
+      passed:       ${{ steps.triage.outputs.passed }}
+      complexity:   ${{ steps.triage.outputs.complexity }}
+      issue_number: ${{ steps.triage.outputs.issue_number }}
+      issue_title:  ${{ steps.triage.outputs.issue_title }}
+      issue_body:   ${{ steps.triage.outputs.issue_body }}
+
+    steps:
+      - name: Triage issue
+        id: triage
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue  = context.payload.issue;
+            const title  = issue.title.toLowerCase();
+            const body   = (issue.body || '').toLowerCase();
+            const text   = title + ' ' + body;
+
+            // ── Keyword banks ──────────────────────────────────────────────
+            const PAGES    = ['homepage', 'about', 'products', 'index'];
+            const ELEMENTS = ['headline', 'section', 'footer', 'link', 'text', 'hero', 'title'];
+            const ACTIONS  = ['change', 'update', 'add', 'remove', 'edit'];
+
+            const hasPage    = PAGES.some(p => text.includes(p));
+            const hasElement = ELEMENTS.some(e => text.includes(e));
+            const hasAction  = ACTIONS.some(a => text.includes(a));
+
+            // ── Helper: create label if it doesn't exist yet ──────────────
+            const ensureLabel = async (name, color, description) => {
+              try {
+                await github.rest.issues.getLabel({
+                  owner: context.repo.owner, repo: context.repo.repo, name
+                });
+              } catch {
+                await github.rest.issues.createLabel({
+                  owner: context.repo.owner, repo: context.repo.repo,
+                  name, color, description
+                });
+              }
+            };
+
+            // ── Vague ticket ──────────────────────────────────────────────
+            if (!hasPage || !hasElement || !hasAction) {
+              await ensureLabel('needs-clarification', 'e4e669',
+                'Issue needs more detail before it can be worked on');
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: issue.number,
+                labels: ['needs-clarification']
+              });
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: issue.number,
+                body: [
+                  '👋 **This ticket needs clarification.**',
+                  '',
+                  'Before it can be routed to a developer, please specify:',
+                  '',
+                  `- **Which page?** (e.g. homepage, about, products)  ${!hasPage ? '← missing' : '✅'}`,
+                  `- **Which element?** (e.g. hero, headline, section, footer, link)  ${!hasElement ? '← missing' : '✅'}`,
+                  `- **What change?** (e.g. update, add, remove, edit)  ${!hasAction ? '← missing' : '✅'}`,
+                ].join('\n')
+              });
+              core.setOutput('passed', 'false');
+              return;
+            }
+
+            // ── Complexity classification ──────────────────────────────────
+            const STRUCTURAL = [
+              'add section', 'new section', 'create section',
+              'add page',    'new page',    'create page'
+            ];
+            const complexity = STRUCTURAL.some(k => text.includes(k)) ? 'medium' : 'low';
+
+            // ── Ensure all working labels exist ────────────────────────────
+            await ensureLabel('triaged',          '0075ca', 'Issue has been triaged and accepted');
+            await ensureLabel('complexity:low',   'c2e0c6', 'Small, well-scoped text change');
+            await ensureLabel('complexity:medium','f9d0c4', 'Structural or multi-element change');
+            await ensureLabel('auto-generated',   'bfd4f2', 'Auto-generated PR from orchestrator');
+
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: issue.number,
+              labels: ['triaged', `complexity:${complexity}`]
+            });
+            await github.rest.issues.createComment({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: issue.number,
+              body: [
+                `✅ **Ticket accepted.** Complexity: \`${complexity}\`.`,
+                '',
+                'Routing to **Developer Agent** — a branch and draft PR will be created shortly.',
+              ].join('\n')
+            });
+
+            // ── Pass outputs to next job ───────────────────────────────────
+            core.setOutput('passed',       'true');
+            core.setOutput('complexity',   complexity);
+            core.setOutput('issue_number', String(issue.number));
+            core.setOutput('issue_title',  issue.title);
+            core.setOutput('issue_body',   issue.body || '');
+
+  # ── Job 2: Developer Agent ────────────────────────────────────────────────────
+  developer:
+    needs: triage
+    if: needs.triage.outputs.passed == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Create branch, placeholder commit, and PR
+        uses: actions/github-script@v7
+        env:
+          ISSUE_NUMBER: ${{ needs.triage.outputs.issue_number }}
+          ISSUE_TITLE:  ${{ needs.triage.outputs.issue_title }}
+          ISSUE_BODY:   ${{ needs.triage.outputs.issue_body }}
+          COMPLEXITY:   ${{ needs.triage.outputs.complexity }}
+        with:
+          script: |
+            const issueNumber = process.env.ISSUE_NUMBER;
+            const issueTitle  = process.env.ISSUE_TITLE;
+            const issueBody   = process.env.ISSUE_BODY;
+            const complexity  = process.env.COMPLEXITY;
+            const branchName  = `auto/ticket-${issueNumber}`;
+
+            // ── Resolve HEAD SHA of main ───────────────────────────────────
+            const { data: mainRef } = await github.rest.git.getRef({
+              owner: context.repo.owner, repo: context.repo.repo,
+              ref: 'heads/main'
+            });
+            const headSha = mainRef.object.sha;
+
+            // ── Create branch ──────────────────────────────────────────────
+            try {
+              await github.rest.git.createRef({
+                owner: context.repo.owner, repo: context.repo.repo,
+                ref: `refs/heads/${branchName}`,
+                sha: headSha
+              });
+              console.log(`Branch created: ${branchName}`);
+            } catch (err) {
+              if (err.status === 422) {
+                console.log(`Branch ${branchName} already exists — continuing.`);
+              } else {
+                throw err;
+              }
+            }
+
+            // ── Placeholder commit ─────────────────────────────────────────
+            const filePath = `.github/auto-tickets/issue-${issueNumber}.md`;
+            const fileContent = [
+              `# Auto-ticket: Issue #${issueNumber}`,
+              '',
+              `**Title:** ${issueTitle}`,
+              `**Complexity:** ${complexity}`,
+              '',
+              '## Issue description',
+              '',
+              issueBody || '_No description provided._',
+              '',
+              '---',
+              '_This file was auto-generated by the orchestrator workflow._',
+              '_Replace with actual implementation changes._',
+            ].join('\n');
+
+            const encoded = Buffer.from(fileContent).toString('base64');
+
+            // Check whether the file already exists on the branch (re-run safety)
+            let existingSha;
+            try {
+              const { data: existing } = await github.rest.repos.getContent({
+                owner: context.repo.owner, repo: context.repo.repo,
+                path: filePath, ref: branchName
+              });
+              existingSha = existing.sha;
+            } catch { /* file doesn't exist yet */ }
+
+            await github.rest.repos.createOrUpdateFileContents({
+              owner: context.repo.owner, repo: context.repo.repo,
+              path: filePath,
+              message: `auto: scaffold placeholder for issue #${issueNumber}`,
+              content: encoded,
+              branch: branchName,
+              ...(existingSha ? { sha: existingSha } : {})
+            });
+            console.log(`Placeholder committed to ${branchName} at ${filePath}`);
+
+            // ── Open PR ────────────────────────────────────────────────────
+            const prBody = [
+              `Closes #${issueNumber}`,
+              '',
+              '> Auto-generated by the **Issue Orchestrator** workflow.',
+              '',
+              `**Complexity:** \`${complexity}\``,
+              '',
+              '## Original issue',
+              '',
+              issueBody || '_No description provided._',
+              '',
+              '---',
+              '_Replace the placeholder file with real implementation changes before merging._',
+            ].join('\n');
+
+            let prUrl;
+            try {
+              const { data: pr } = await github.rest.pulls.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title: `Auto: ${issueTitle}`,
+                body:  prBody,
+                head:  branchName,
+                base:  'main',
+                draft: true
+              });
+              prUrl = pr.html_url;
+
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: pr.number,
+                labels: ['auto-generated', `complexity:${complexity}`]
+              });
+              console.log(`PR created: ${prUrl}`);
+            } catch (err) {
+              if (err.status === 422) {
+                console.log('PR already exists for this branch — skipping creation.');
+              } else {
+                throw err;
+              }
+            }
+
+            // ── Link PR back to the issue ──────────────────────────────────
+            if (prUrl) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: Number(issueNumber),
+                body: `🤖 **Developer Agent** opened a draft PR: ${prUrl}`
+              });
+            }

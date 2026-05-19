@@ -31,7 +31,6 @@ jobs:
             const body   = (issue.body || '').toLowerCase();
             const text   = title + ' ' + body;
 
-            // ── Keyword banks ──────────────────────────────────────────────
             const PAGES    = ['homepage', 'about', 'products', 'index'];
             const ELEMENTS = ['headline', 'section', 'footer', 'link', 'text', 'hero', 'title'];
             const ACTIONS  = ['change', 'update', 'add', 'remove', 'edit'];
@@ -40,7 +39,6 @@ jobs:
             const hasElement = ELEMENTS.some(e => text.includes(e));
             const hasAction  = ACTIONS.some(a => text.includes(a));
 
-            // ── Helper: create label if it doesn't exist yet ──────────────
             const ensureLabel = async (name, color, description) => {
               try {
                 await github.rest.issues.getLabel({
@@ -54,7 +52,6 @@ jobs:
               }
             };
 
-            // ── Vague ticket ──────────────────────────────────────────────
             if (!hasPage || !hasElement || !hasAction) {
               await ensureLabel('needs-clarification', 'e4e669',
                 'Issue needs more detail before it can be worked on');
@@ -80,14 +77,12 @@ jobs:
               return;
             }
 
-            // ── Complexity classification ──────────────────────────────────
             const STRUCTURAL = [
               'add section', 'new section', 'create section',
               'add page',    'new page',    'create page'
             ];
             const complexity = STRUCTURAL.some(k => text.includes(k)) ? 'medium' : 'low';
 
-            // ── Ensure all working labels exist ────────────────────────────
             await ensureLabel('triaged',          '0075ca', 'Issue has been triaged and accepted');
             await ensureLabel('complexity:low',   'c2e0c6', 'Small, well-scoped text change');
             await ensureLabel('complexity:medium','f9d0c4', 'Structural or multi-element change');
@@ -108,7 +103,6 @@ jobs:
               ].join('\n')
             });
 
-            // ── Pass outputs to next job ───────────────────────────────────
             core.setOutput('passed',       'true');
             core.setOutput('complexity',   complexity);
             core.setOutput('issue_number', String(issue.number));
@@ -120,9 +114,13 @@ jobs:
     needs: triage
     if: needs.triage.outputs.passed == 'true'
     runs-on: ubuntu-latest
+    outputs:
+      pr_number:   ${{ steps.create_pr.outputs.pr_number }}
+      branch_name: ${{ steps.create_pr.outputs.branch_name }}
 
     steps:
       - name: Create branch, placeholder commit, and PR
+        id: create_pr
         uses: actions/github-script@v7
         env:
           ISSUE_NUMBER: ${{ needs.triage.outputs.issue_number }}
@@ -137,14 +135,12 @@ jobs:
             const complexity  = process.env.COMPLEXITY;
             const branchName  = `auto/ticket-${issueNumber}`;
 
-            // ── Resolve HEAD SHA of main ───────────────────────────────────
             const { data: mainRef } = await github.rest.git.getRef({
               owner: context.repo.owner, repo: context.repo.repo,
               ref: 'heads/main'
             });
             const headSha = mainRef.object.sha;
 
-            // ── Create branch ──────────────────────────────────────────────
             try {
               await github.rest.git.createRef({
                 owner: context.repo.owner, repo: context.repo.repo,
@@ -153,14 +149,10 @@ jobs:
               });
               console.log(`Branch created: ${branchName}`);
             } catch (err) {
-              if (err.status === 422) {
-                console.log(`Branch ${branchName} already exists — continuing.`);
-              } else {
-                throw err;
-              }
+              if (err.status !== 422) throw err;
+              console.log(`Branch ${branchName} already exists — continuing.`);
             }
 
-            // ── Placeholder commit ─────────────────────────────────────────
             const filePath = `.github/auto-tickets/issue-${issueNumber}.md`;
             const fileContent = [
               `# Auto-ticket: Issue #${issueNumber}`,
@@ -179,7 +171,6 @@ jobs:
 
             const encoded = Buffer.from(fileContent).toString('base64');
 
-            // Check whether the file already exists on the branch (re-run safety)
             let existingSha;
             try {
               const { data: existing } = await github.rest.repos.getContent({
@@ -187,7 +178,7 @@ jobs:
                 path: filePath, ref: branchName
               });
               existingSha = existing.sha;
-            } catch { /* file doesn't exist yet */ }
+            } catch { /* new file */ }
 
             await github.rest.repos.createOrUpdateFileContents({
               owner: context.repo.owner, repo: context.repo.repo,
@@ -197,9 +188,7 @@ jobs:
               branch: branchName,
               ...(existingSha ? { sha: existingSha } : {})
             });
-            console.log(`Placeholder committed to ${branchName} at ${filePath}`);
 
-            // ── Open PR ────────────────────────────────────────────────────
             const prBody = [
               `Closes #${issueNumber}`,
               '',
@@ -215,7 +204,9 @@ jobs:
               '_Replace the placeholder file with real implementation changes before merging._',
             ].join('\n');
 
+            let prNumber;
             let prUrl;
+
             try {
               const { data: pr } = await github.rest.pulls.create({
                 owner: context.repo.owner, repo: context.repo.repo,
@@ -225,23 +216,33 @@ jobs:
                 base:  'main',
                 draft: true
               });
-              prUrl = pr.html_url;
+              prNumber = pr.number;
+              prUrl    = pr.html_url;
 
               await github.rest.issues.addLabels({
                 owner: context.repo.owner, repo: context.repo.repo,
-                issue_number: pr.number,
+                issue_number: prNumber,
                 labels: ['auto-generated', `complexity:${complexity}`]
               });
               console.log(`PR created: ${prUrl}`);
             } catch (err) {
               if (err.status === 422) {
-                console.log('PR already exists for this branch — skipping creation.');
+                // PR already exists — look it up
+                const { data: prs } = await github.rest.pulls.list({
+                  owner: context.repo.owner, repo: context.repo.repo,
+                  head: `${context.repo.owner}:${branchName}`,
+                  base: 'main', state: 'open'
+                });
+                if (prs.length) {
+                  prNumber = prs[0].number;
+                  prUrl    = prs[0].html_url;
+                  console.log(`Using existing PR: ${prUrl}`);
+                }
               } else {
                 throw err;
               }
             }
 
-            // ── Link PR back to the issue ──────────────────────────────────
             if (prUrl) {
               await github.rest.issues.createComment({
                 owner: context.repo.owner, repo: context.repo.repo,
@@ -249,3 +250,288 @@ jobs:
                 body: `🤖 **Developer Agent** opened a draft PR: ${prUrl}`
               });
             }
+
+            core.setOutput('pr_number',   String(prNumber ?? ''));
+            core.setOutput('branch_name', branchName);
+
+  # ── Job 3: Tester ────────────────────────────────────────────────────────────
+  tester:
+    needs: developer
+    if: needs.developer.result == 'success' && needs.developer.outputs.pr_number != ''
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.developer.outputs.branch_name }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install dependencies and Playwright browsers
+        run: npm install && npx playwright install --with-deps chromium
+
+      - name: Resolve Vercel preview URL
+        id: preview
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER:   ${{ needs.developer.outputs.pr_number }}
+          BRANCH_NAME: ${{ needs.developer.outputs.branch_name }}
+        with:
+          script: |
+            const prNumber   = Number(process.env.PR_NUMBER);
+            const branchName = process.env.BRANCH_NAME;
+            let previewUrl   = null;
+
+            // Poll up to 3 minutes (18 × 10 s) for the Vercel deployment
+            const MAX = 18;
+            for (let i = 0; i < MAX; i++) {
+              // 1. GitHub Deployments API (Vercel registers here)
+              const { data: deps } = await github.rest.repos.listDeployments({
+                owner: context.repo.owner, repo: context.repo.repo,
+                ref: branchName, environment: 'Preview', per_page: 5
+              });
+              for (const dep of deps) {
+                const { data: statuses } = await github.rest.repos.listDeploymentStatuses({
+                  owner: context.repo.owner, repo: context.repo.repo,
+                  deployment_id: dep.id, per_page: 1
+                });
+                if (statuses[0]?.state === 'success' && statuses[0]?.environment_url) {
+                  previewUrl = statuses[0].environment_url;
+                  break;
+                }
+              }
+              if (previewUrl) break;
+
+              // 2. Vercel bot PR comment
+              const { data: comments } = await github.rest.issues.listComments({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: prNumber, per_page: 50
+              });
+              for (const c of comments) {
+                if (c.user.type === 'Bot') {
+                  const m = (c.body || '').match(/https:\/\/\S+\.vercel\.app/);
+                  if (m) { previewUrl = m[0]; break; }
+                }
+              }
+              if (previewUrl) break;
+
+              if (i < MAX - 1) {
+                console.log(`[${i + 1}/${MAX}] Waiting for Vercel preview...`);
+                await new Promise(r => setTimeout(r, 10000));
+              }
+            }
+
+            if (!previewUrl) {
+              console.log('No preview deployment found — falling back to production URL.');
+              previewUrl = 'https://greif-agentic-demo.vercel.app';
+            }
+
+            console.log(`Testing against: ${previewUrl}`);
+            core.setOutput('url', previewUrl);
+
+      - name: Run Playwright tests
+        id: run_tests
+        env:
+          PLAYWRIGHT_BASE_URL: ${{ steps.preview.outputs.url }}
+        run: |
+          set +e
+          npx playwright test --reporter=json > playwright-results.json 2>/dev/null
+          echo "playwright_exit=$?" >> "$GITHUB_OUTPUT"
+          set -e
+
+      - name: Upload test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results-pr-${{ needs.developer.outputs.pr_number }}
+          path: playwright-results.json
+          if-no-files-found: ignore
+
+      - name: Post results and label PR
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER:       ${{ needs.developer.outputs.pr_number }}
+          PREVIEW_URL:     ${{ steps.preview.outputs.url }}
+          PLAYWRIGHT_EXIT: ${{ steps.run_tests.outputs.playwright_exit }}
+        with:
+          script: |
+            const fs          = require('fs');
+            const prNumber    = Number(process.env.PR_NUMBER);
+            const previewUrl  = process.env.PREVIEW_URL;
+            const exitCode    = process.env.PLAYWRIGHT_EXIT;
+            const allPassed   = exitCode === '0';
+
+            let stats    = { expected: 0, unexpected: 0, skipped: 0, flaky: 0 };
+            let testRows = [];
+
+            try {
+              const raw     = fs.readFileSync('playwright-results.json', 'utf8');
+              const results = JSON.parse(raw);
+              stats = results.stats || stats;
+
+              const flattenSpecs = (suites, fileTitle) => {
+                for (const suite of (suites || [])) {
+                  const title = suite.title || fileTitle || '';
+                  for (const spec of (suite.specs || [])) {
+                    const icon = spec.ok ? '✅' : '❌';
+                    testRows.push(`| ${icon} | \`${title}\` | ${spec.title} |`);
+                  }
+                  flattenSpecs(suite.suites, title);
+                }
+              };
+              flattenSpecs(results.suites);
+            } catch (e) {
+              testRows.push('| ⚠️ | — | Could not parse test results |');
+            }
+
+            const header = allPassed
+              ? '### ✅ Playwright Tests — All Passed'
+              : '### ❌ Playwright Tests — Failures Detected';
+
+            const commentBody = [
+              header,
+              '',
+              `**Preview URL:** ${previewUrl}`,
+              `**Results:** \`${stats.expected ?? 0}\` passed · \`${stats.unexpected ?? 0}\` failed · \`${stats.skipped ?? 0}\` skipped`,
+              '',
+              testRows.length
+                ? ['| Status | File | Test |', '|--------|------|------|', ...testRows].join('\n')
+                : '_No test output available._',
+            ].join('\n');
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: prNumber, body: commentBody
+            });
+
+            const ensureLabel = async (name, color, desc) => {
+              try { await github.rest.issues.getLabel({ owner: context.repo.owner, repo: context.repo.repo, name }); }
+              catch { await github.rest.issues.createLabel({ owner: context.repo.owner, repo: context.repo.repo, name, color, description: desc }); }
+            };
+            await ensureLabel('tests-passed',  '0e8a16', 'All Playwright E2E tests passed');
+            await ensureLabel('tests-failing', 'd93f0b', 'One or more E2E tests failed');
+
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: prNumber,
+              labels: [allPassed ? 'tests-passed' : 'tests-failing']
+            });
+
+  # ── Job 4: Governance ────────────────────────────────────────────────────────
+  governance:
+    needs: [tester, developer]
+    # Run even if tester fails; skip only if developer never produced a PR
+    if: always() && needs.developer.result == 'success' && needs.developer.outputs.pr_number != ''
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Scan PR diff for forbidden content
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ needs.developer.outputs.pr_number }}
+        with:
+          script: |
+            const prNumber = Number(process.env.PR_NUMBER);
+
+            // ── Forbidden content rules ────────────────────────────────────
+            const RULES = [
+              {
+                pattern: /guaranteed\s+100%\s+recyclable/gi,
+                tag:     'UNVERIFIABLE_CLAIM',
+                detail:  '"guaranteed 100% recyclable" — unverifiable environmental claim'
+              },
+              {
+                pattern: /best\s+in\s+the\s+world/gi,
+                tag:     'UNSUBSTANTIATED_CLAIM',
+                detail:  '"best in the world" — unsubstantiated superlative'
+              },
+              {
+                // Known industrial packaging competitors
+                pattern: /\b(mauser|schutz|berry\s+global|bway|sotralentz|rexnord\s+packaging|greif\s+rival)\b/gi,
+                tag:     'COMPETITOR_REFERENCE',
+                detail:  'Competitor name referenced in content'
+              },
+            ];
+
+            // ── Fetch changed files ────────────────────────────────────────
+            const { data: files } = await github.rest.pulls.listFiles({
+              owner: context.repo.owner, repo: context.repo.repo,
+              pull_number: prNumber, per_page: 100
+            });
+
+            const flags = [];
+
+            for (const file of files) {
+              // Only scan lines that were added (lines beginning with "+")
+              const addedLines = (file.patch || '')
+                .split('\n')
+                .filter(l => l.startsWith('+') && !l.startsWith('+++'))
+                .join('\n');
+
+              for (const rule of RULES) {
+                if (rule.pattern.test(addedLines)) {
+                  flags.push({ file: file.filename, ...rule });
+                }
+              }
+            }
+
+            // ── Ensure labels exist ────────────────────────────────────────
+            const ensureLabel = async (name, color, desc) => {
+              try { await github.rest.issues.getLabel({ owner: context.repo.owner, repo: context.repo.repo, name }); }
+              catch { await github.rest.issues.createLabel({ owner: context.repo.owner, repo: context.repo.repo, name, color, description: desc }); }
+            };
+            await ensureLabel('governance-passed', '0e8a16', 'Content governance check passed');
+            await ensureLabel('governance-block',  'b60205', 'PR blocked: content governance violation');
+
+            // ── Build comment + apply label ────────────────────────────────
+            let commentBody;
+
+            if (flags.length === 0) {
+              commentBody = [
+                '### ✅ Governance Check — Approved',
+                '',
+                'No forbidden content detected in this PR\'s diff.',
+                '',
+                '_Scanned for: unverifiable claims · unsubstantiated superlatives · competitor name references._',
+              ].join('\n');
+
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: prNumber, labels: ['governance-passed']
+              });
+            } else {
+              const flagList = flags.map(f =>
+                `| \`${f.tag}\` | \`${f.file}\` | ${f.detail} |`
+              ).join('\n');
+
+              commentBody = [
+                '### 🚫 Governance Check — Blocked',
+                '',
+                'The following issues were found in the PR diff:',
+                '',
+                '| Flag | File | Reason |',
+                '|------|------|--------|',
+                flagList,
+                '',
+                '**This PR cannot be merged until the flagged content is revised.**  ',
+                'Remove or reword the flagged text, push a new commit, and the check will re-run automatically.',
+              ].join('\n');
+
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: prNumber, labels: ['governance-block']
+              });
+
+              core.setFailed(`Governance check failed: ${flags.length} violation(s) found.`);
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: prNumber, body: commentBody
+            });

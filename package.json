@@ -4,7 +4,7 @@
   "description": "Agentic SDLC pipeline demo for Greif - static site clone + CI/CD",
   "private": true,
   "scripts": {
-    "test": "vitest run",
+    "test": "vitest run tests",
     "test:e2e": "playwright test"
   },
   "devDependencies": {

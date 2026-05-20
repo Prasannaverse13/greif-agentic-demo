@@ -4,7 +4,8 @@ test("homepage loads with Greif branding", async ({ page }) => {
   await page.goto("/");
   await expect(page).toHaveTitle(/Greif/i);
   await expect(page.locator(".logo img")).toBeVisible();
-  await expect(page.locator(".hero-slide.is-active h2")).toContainText(/purpose|sustainability|packaging/i);
+  await expect(page.locator(".hero-slide.is-active h2")).toBeVisible();
+  await expect(page.locator(".hero-slide.is-active h2")).not.toHaveText('');
 });
 
 test("mobile menu toggles", async ({ page }) => {

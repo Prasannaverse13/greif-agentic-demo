@@ -12,8 +12,8 @@ console.log('Full text:', fullText.substring(0, 200));
 
 let edits = [];
 
-// Pattern B: Hero/Headline
-if (textLower.match(/hero|headline|h1/)) {
+// Pattern B: Hero/Headline — targets h2 since that's what index.html uses
+if (textLower.match(/hero|headline|h1|h2/)) {
   let newHeadline = null;
   
   const toMatch = fullText.match(/to:\s*["']([^"']+)["']/i);
@@ -34,13 +34,25 @@ if (textLower.match(/hero|headline|h1/)) {
 
   if (newHeadline) {
     let html = fs.readFileSync('index.html', 'utf8');
-    const oldH1 = html.match(/<<h1[^>]*>(.*?)<<\/h1>/i);
-    console.log('Old h1:', oldH1 ? oldH1[0] : 'not found');
     
-    html = html.replace(/<<h1[^>]*>.*?<<\/h1>/i, `<h1>${newHeadline}</h1>`);
+    // Try h2 first (your site uses h2), fallback to h1
+    if (html.match(/<h2[^>]*>.*?<\/h2>/i)) {
+      const oldH2 = html.match(/<h2[^>]*>.*?<\/h2>/i);
+      console.log('Old h2:', oldH2 ? oldH2[0] : 'not found');
+      html = html.replace(/<h2[^>]*>.*?<\/h2>/i, `<h2>${newHeadline}</h2>`);
+      console.log('Updated index.html h2');
+    } else if (html.match(/<h1[^>]*>.*?<\/h1>/i)) {
+      const oldH1 = html.match(/<h1[^>]*>.*?<\/h1>/i);
+      console.log('Old h1:', oldH1 ? oldH1[0] : 'not found');
+      html = html.replace(/<h1[^>]*>.*?<\/h1>/i, `<h1>${newHeadline}</h1>`);
+      console.log('Updated index.html h1');
+    } else {
+      console.log('No h1 or h2 found in index.html');
+      process.exit(1);
+    }
+    
     fs.writeFileSync('index.html', html);
     edits.push({ file: 'index.html', pattern: 'hero', newHeadline });
-    console.log('Updated index.html h1');
   } else {
     console.log('Could not extract headline from issue text');
   }

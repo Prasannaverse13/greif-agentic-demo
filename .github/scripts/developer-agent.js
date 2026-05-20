@@ -29,23 +29,6 @@ if (textLower.match(/hero|headline|change.*h1|h1.*change/)) {
     let html = fs.readFileSync('index.html', 'utf8');
     html = html.replace(/<h1[^>]*>.*?<\/h1>/i, `<h1>${newHeadline}</h1>`);
     fs.writeFileSync('index.html', html);
-    edits.push({ file: 'index.html', pattern: 'hero', newHeadline });
-  }
-}
-
-// Pattern C: Add section
-else if (textLower.match(/add.*section|new section|commitments|bullet/)) {
-  const sectionTitle = extractQuoted(fullText, 'titled') || extractQuoted(fullText, 'title') || 'New Section';
-  const targetFile = textLower.match(/home|index/) ? 'index.html' : 'about.html';
-  
-  const bullets = [];
-  const lines = ISSUE_BODY.split('\n');
-  for (const line of lines) {
-    const bulletMatch = line.match(/^\s*[-*•]\s*(.+)/);
-    if (bulletMatch) bullets.push(bulletMatch[1]);
-  }
-  
-  const bulletHtml = bullets.length > 0 
     const fs = require('fs');
 
     const ISSUE_BODY = process.env.ISSUE_BODY || '';
@@ -60,23 +43,19 @@ else if (textLower.match(/add.*section|new section|commitments|bullet/)) {
 
     let edits = [];
 
-    // Pattern B: Hero/Headline — more flexible matching
+    // Pattern B: Hero/Headline
     if (textLower.match(/hero|headline|h1/)) {
-      // Try multiple extraction patterns
       let newHeadline = null;
   
-      // Pattern: "to: 'text'" or 'to: "text"'
       const toMatch = fullText.match(/to:\s*["']([^"']+)["']/i);
       if (toMatch) newHeadline = toMatch[1];
   
-      // Pattern: just quoted text near hero/headline
       if (!newHeadline) {
         const quoteMatch = fullText.match(/hero.*?["']([^"']+)["']/i) || 
                            fullText.match(/headline.*?["']([^"']+)["']/i);
         if (quoteMatch) newHeadline = quoteMatch[1];
       }
   
-      // Pattern: text after "to:" without quotes
       if (!newHeadline) {
         const plainMatch = fullText.match(/to:\s*([^\n]+)/i);
         if (plainMatch) newHeadline = plainMatch[1].trim();
@@ -86,15 +65,15 @@ else if (textLower.match(/add.*section|new section|commitments|bullet/)) {
 
       if (newHeadline) {
         let html = fs.readFileSync('index.html', 'utf8');
-        const oldH1 = html.match(/<h1[^>]*>(.*?)<\/h1>/i);
+        const oldH1 = html.match(/<<h1[^>]*>(.*?)<<?\/h1>/i);
         console.log('Old h1:', oldH1 ? oldH1[0] : 'not found');
     
-        html = html.replace(/<h1[^>]*>.*?<\/h1>/i, `<h1>${newHeadline}</h1>`);
+        html = html.replace(/<<h1[^>]*>.*?<<\/h1>/i, `<h1>${newHeadline}</h1>`);
         fs.writeFileSync('index.html', html);
         edits.push({ file: 'index.html', pattern: 'hero', newHeadline });
-        console.log('✅ Updated index.html h1');
+        console.log('Updated index.html h1');
       } else {
-        console.log('❌ Could not extract headline from issue text');
+        console.log('Could not extract headline from issue text');
       }
     }
 
@@ -126,16 +105,16 @@ else if (textLower.match(/add.*section|new section|commitments|bullet/)) {
       }
       fs.writeFileSync(targetFile, html);
       edits.push({ file: targetFile, pattern: 'section', sectionTitle });
-      console.log('✅ Updated', targetFile, 'with section');
+      console.log('Updated', targetFile, 'with section');
     }
 
     // Pattern A: Footer link
     else if (textLower.match(/footer|investor|link to/)) {
-      const hrefMatch = fullText.match(/linking to\s+(\/[^
-    \s"']+)/i) || fullText.match(/href=["']?(\/[^"'\s]+)/i);
+      const hrefMatch = fullText.match(/linking to\s+(\/[^\s"']+)/i) || 
+                       fullText.match(/href=["']?(\/[^"'\s]+)/i);
       const href = hrefMatch ? hrefMatch[1] : '/investors';
   
-      const textMatch = fullText.match(/link\s+(?:in the footer\s+)?(?:to\s+)?["']?([^"'\n]+?)['"]?\s*(?:linking|href|$)/i);
+      const textMatch = fullText.match(/link\s+(?:in the footer\s+)?(?:to\s+)?["']?([^"'\n]+?)["']?\s*(?:linking|href|$)/i);
       const linkText = textMatch ? textMatch[1].trim() : 'Investor Relations';
   
       const linkHtml = `  <a href="${href}">${linkText}</a>\n`;
@@ -147,7 +126,7 @@ else if (textLower.match(/add.*section|new section|commitments|bullet/)) {
           html = html.replace('</footer>', `${linkHtml}</footer>`);
           fs.writeFileSync(file, html);
           edits.push({ file, pattern: 'footer', href, linkText });
-          console.log('✅ Updated', file, 'footer');
+          console.log('Updated', file, 'footer');
         }
       }
     }
@@ -156,8 +135,9 @@ else if (textLower.match(/add.*section|new section|commitments|bullet/)) {
     console.log(JSON.stringify(edits, null, 2));
 
     if (edits.length === 0) {
-      console.log('❌ No edits made — issue text did not match any pattern');
+      console.log('No edits made — issue text did not match any pattern');
       process.exit(1);
     }
 
     process.exit(0);
+      const files = fs.readdirSync('.').filter(f => f.endsWith('.html'));

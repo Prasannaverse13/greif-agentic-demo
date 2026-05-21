@@ -3,6 +3,20 @@ name: Issue Orchestrator (Gemini-Powered)
 on:
   issues:
     types: [opened, edited]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "Issue number to process"
+        required: true
+        default: "29"
+      issue_title:
+        description: "Issue title"
+        required: true
+        default: "Add footer link to the homepage"
+      issue_body:
+        description: "Issue body"
+        required: false
+        default: "Please add an Investor Relations footer link to the homepage footer section."
 
 permissions:
   issues:       write
@@ -49,9 +63,9 @@ jobs:
         uses: actions/github-script@v7
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          ISSUE_NUMBER:   ${{ github.event.issue.number }}
-          ISSUE_TITLE:    ${{ github.event.issue.title }}
-          ISSUE_BODY:     ${{ github.event.issue.body }}
+          ISSUE_NUMBER:   ${{ github.event.issue.number || inputs.issue_number }}
+          ISSUE_TITLE:    ${{ github.event.issue.title  || inputs.issue_title }}
+          ISSUE_BODY:     ${{ github.event.issue.body   || inputs.issue_body }}
           TOKEN_BUDGET:   "50000"
         with:
           script: |

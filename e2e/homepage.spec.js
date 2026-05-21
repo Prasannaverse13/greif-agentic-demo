@@ -1,5 +1,5 @@
 // @ts-check
-const { test, expect } = require("@playwright/test");
+import { test, expect } from "@playwright/test";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Suite 1: Static site quality (T1.1 – T1.3)

@@ -492,22 +492,28 @@ Rules:
               });
               console.log(`Created PR: ${prUrl}`);
             } catch (err) {
-              if (err.status !== 422) throw err;
-              const { data: prs } = await github.rest.pulls.list({
-                owner: context.repo.owner, repo: context.repo.repo,
-                head: `${context.repo.owner}:${branchName}`, base: 'main', state: 'open'
-              });
-              if (prs.length) { prNumber = prs[0].number; prUrl = prs[0].html_url; }
-              console.log(`Using existing PR: ${prUrl}`);
+              if (err.status === 422) {
+                // PR already exists for this branch — look it up
+                const { data: prs } = await github.rest.pulls.list({
+                  owner: context.repo.owner, repo: context.repo.repo,
+                  head: `${context.repo.owner}:${branchName}`, base: 'main', state: 'open'
+                });
+                if (prs.length) { prNumber = prs[0].number; prUrl = prs[0].html_url; }
+                console.log(`Using existing PR: ${prUrl}`);
+              } else {
+                throw err;
+              }
             }
 
-            if (prUrl) {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner, repo: context.repo.repo,
-                issue_number: Number(issueNumber),
-                body: `🤖 **Developer Agent** opened a draft PR: ${prUrl}`
-              });
+            if (!prNumber || !prUrl) {
+              throw new Error(`Unable to create or locate draft PR for branch ${branchName}`);
             }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: Number(issueNumber),
+              body: `🤖 **Developer Agent** opened a draft PR: ${prUrl}`
+            });
 
             core.setOutput('pr_number',   String(prNumber ?? ''));
             core.setOutput('branch_name', branchName);

@@ -187,7 +187,19 @@ jobs:
 
             const bulletsStr = Array.isArray(section_bullets) && section_bullets.length ? section_bullets.join('|||') : '';
             await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: Number(issueNumber),
-              body: `✅ **Ticket accepted.** Gemini classified as \`${edit_type}\` (complexity \`${complexity}\`).\n\n**Routing to Developer Agent** — branch and PR will appear shortly.`
+              body: [
+                '## 🔍 Agent 1 — Triage (Gemini Flash)',
+                '',
+                '| Field | Value |',
+                '|-------|-------|',
+                `| Status | ✅ Accepted |`,
+                `| Edit type | \`${edit_type}\` |`,
+                `| Complexity | \`${complexity}\` |`,
+                `| Target page | \`${target_page}\` |`,
+                `| Gemini tokens used | ${tokens.toLocaleString()} |`,
+                '',
+                '**Next:** Developer Agent is creating a branch and editing the HTML files...',
+              ].join('\n')
             });
 
             core.setOutput('passed',          'true');
@@ -397,7 +409,18 @@ jobs:
 
             await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo,
               issue_number: Number(issueNumber),
-              body: `🤖 **Developer Agent** opened draft PR: ${prUrl}`
+              body: [
+                '## 👨‍💻 Agent 2 — Developer',
+                '',
+                '| Field | Value |',
+                '|-------|-------|',
+                `| Status | ✅ Done |`,
+                `| Branch | \`${branchName}\` |`,
+                `| Change type | \`${changeType}\` |`,
+                `| Draft PR | ${prUrl} |`,
+                '',
+                '**Next:** Tester Agent is running Playwright tests on the Vercel preview...',
+              ].join('\n')
             });
             core.setOutput('pr_number',   String(prNumber));
             core.setOutput('branch_name', branchName);
@@ -474,25 +497,40 @@ jobs:
         id: post_results
         uses: actions/github-script@v7
         env:
-          PR_NUMBER:   ${{ needs.developer.outputs.pr_number }}
-          PW_EXIT:     ${{ steps.pw_test.outputs.exit_code }}
-          PREVIEW_URL: ${{ steps.preview.outputs.url }}
+          PR_NUMBER:    ${{ needs.developer.outputs.pr_number }}
+          ISSUE_NUMBER: ${{ needs.triage.outputs.issue_number }}
+          PW_EXIT:      ${{ steps.pw_test.outputs.exit_code }}
+          PREVIEW_URL:  ${{ steps.preview.outputs.url }}
         with:
           script: |
-            const prNumber   = Number(process.env.PR_NUMBER);
-            const pwExit     = process.env.PW_EXIT ?? '1';
-            const previewUrl = process.env.PREVIEW_URL ?? '';
-            const allPassed  = pwExit === '0';
-            const icon       = allPassed ? 'pass' : 'FAIL';
+            const prNumber    = Number(process.env.PR_NUMBER);
+            const issueNumber = Number(process.env.ISSUE_NUMBER);
+            const pwExit      = process.env.PW_EXIT ?? '1';
+            const previewUrl  = process.env.PREVIEW_URL ?? '';
+            const allPassed   = pwExit === '0';
+            const statusIcon  = allPassed ? '✅' : '❌';
 
             const ensureLabel = async (name, color, description) => {
               try { await github.rest.issues.getLabel({ owner: context.repo.owner, repo: context.repo.repo, name }); }
               catch { await github.rest.issues.createLabel({ owner: context.repo.owner, repo: context.repo.repo, name, color: color.replace('#',''), description }); }
             };
 
-            await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: prNumber,
-              body: `## Tester Agent — ${icon}\n\n| Check | Result |\n|-------|--------|\n| Playwright | ${allPassed ? 'All passed' : 'Failures found'} |\n| Preview URL | ${previewUrl} |`
-            });
+            const testerBody = [
+              '## 🧪 Agent 3 — Tester',
+              '',
+              '| Check | Result |',
+              '|-------|--------|',
+              `| Playwright E2E | ${allPassed ? '✅ All passed' : '❌ Failures found'} |`,
+              `| Preview URL | [Open preview](${previewUrl}) |`,
+              `| PR | #${prNumber} |`,
+              '',
+              `**Status:** ${statusIcon} ${allPassed ? 'Tests passed — routing to Governance Agent...' : 'Tests failed — PR labelled for review.'}`,
+            ].join('\n');
+
+            // Post to both the issue AND the PR
+            await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: issueNumber, body: testerBody });
+            await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: prNumber, body: testerBody });
+
             for (const [n,c,d] of [['tests-passed','0e8a16','All tests passed'],['tests-failing','b60205','Tests failed']]) await ensureLabel(n,c,d);
             await github.rest.issues.addLabels({ owner: context.repo.owner, repo: context.repo.repo, issue_number: prNumber, labels: [allPassed ? 'tests-passed' : 'tests-failing'] });
             core.setOutput('all_passed', allPassed ? 'true' : 'false');
@@ -509,12 +547,14 @@ jobs:
       - name: Review PR diff with Gemini
         uses: actions/github-script@v7
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          PR_NUMBER:      ${{ needs.developer.outputs.pr_number }}
-          TRIAGE_TOKENS:  ${{ needs.triage.outputs.triage_tokens }}
+          GEMINI_API_KEY:  ${{ secrets.GEMINI_API_KEY }}
+          PR_NUMBER:       ${{ needs.developer.outputs.pr_number }}
+          ISSUE_NUMBER:    ${{ needs.triage.outputs.issue_number }}
+          TRIAGE_TOKENS:   ${{ needs.triage.outputs.triage_tokens }}
         with:
           script: |
             const prNumber     = Number(process.env.PR_NUMBER);
+            const issueNumber  = Number(process.env.ISSUE_NUMBER);
             const apiKey       = process.env.GEMINI_API_KEY;
             const triageTokens = parseInt(process.env.TRIAGE_TOKENS ?? '0', 10);
 
@@ -590,13 +630,36 @@ jobs:
             for (const [n,c,d] of [['governance-passed','0e8a16','Governance check passed'],['governance-block','b60205','Governance violation']]) await ensureLabel(n,c,d);
 
             if (!govResult.flags || govResult.flags.length === 0) {
+              const govBody = [
+                '## 🛡️ Agent 4 — Governance (Gemini Flash)',
+                '',
+                '| Check | Result |',
+                '|-------|--------|',
+                '| Brand claims | ✅ Clean |',
+                '| Competitor refs | ✅ None found |',
+                '| Accessibility | ✅ No violations |',
+                `| Total Gemini tokens | ${totalTokens.toLocaleString()} (~$${costUsd}) |`,
+                '',
+                '**✅ PR is cleared to merge.** No brand, compliance, or governance violations found.',
+              ].join('\n');
               await github.rest.issues.addLabels({ owner: context.repo.owner, repo: context.repo.repo, issue_number: prNumber, labels: ['governance-passed'] });
-              await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: prNumber, body: `Governance Agent: All checks passed. PR is cleared to merge.${costLine}` });
+              await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: prNumber, body: govBody });
+              await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: issueNumber, body: govBody });
             } else {
               const flagTable = govResult.flags.map(f => `| ${f.type} | ${f.file} | ${f.text} | ${f.reason} |`).join('\n');
+              const govBody = [
+                '## 🛡️ Agent 4 — Governance (Gemini Flash)',
+                '',
+                `**❌ BLOCKED** — ${govResult.flags.length} violation(s) found:`,
+                '',
+                '| Type | File | Text | Reason |',
+                '|------|------|------|--------|',
+                flagTable,
+                '',
+                `_Gemini tokens: ${totalTokens.toLocaleString()} (~$${costUsd})_`,
+              ].join('\n');
               await github.rest.issues.addLabels({ owner: context.repo.owner, repo: context.repo.repo, issue_number: prNumber, labels: ['governance-block'] });
-              await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: prNumber,
-                body: `Governance Agent: BLOCK\n\nViolations found:\n\n| Type | File | Text | Reason |\n|------|------|------|--------|\n${flagTable}${costLine}`
-              });
+              await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: prNumber, body: govBody });
+              await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: issueNumber, body: govBody });
               core.setFailed(`Governance violations: ${govResult.flags.map(f => f.type).join(', ')}`);
             }

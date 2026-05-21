@@ -1,0 +1,130 @@
+name: Promote Staging to Production
+
+# T4.6 — Second human gate for production deployment.
+# A human must:
+#   1. Verify the staging environment manually
+#   2. Trigger this workflow with confirmed = "I have verified staging"
+# The workflow then opens a PR from staging → main. Branch protection ensures
+# a second human approves the PR before merge (production deploy).
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmed:
+        description: 'Type exactly: I have verified staging'
+        required: true
+        default: ''
+      release_notes:
+        description: 'Optional release notes for this promotion'
+        required: false
+        default: ''
+
+permissions:
+  contents:      write
+  pull-requests: write
+  issues:        write
+
+jobs:
+  gate_check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify human confirmation
+        run: |
+          if [ "${{ github.event.inputs.confirmed }}" != "I have verified staging" ]; then
+            echo "❌ Confirmation phrase does not match."
+            echo "   Expected: 'I have verified staging'"
+            echo "   Got:      '${{ github.event.inputs.confirmed }}'"
+            exit 1
+          fi
+          echo "✅ Confirmation accepted."
+
+  promote:
+    needs: gate_check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Ensure staging branch exists
+        run: |
+          git fetch origin staging 2>/dev/null || {
+            echo "⚠️  staging branch not found. Creating it from main..."
+            git checkout -b staging
+            git push origin staging
+          }
+          echo "staging branch ready"
+
+      - name: Open PR staging → main
+        uses: actions/github-script@v7
+        env:
+          RELEASE_NOTES: ${{ github.event.inputs.release_notes }}
+          TRIGGERED_BY:  ${{ github.actor }}
+        with:
+          script: |
+            const releaseNotes = process.env.RELEASE_NOTES || '_No release notes provided._';
+            const triggeredBy  = process.env.TRIGGERED_BY;
+            const now          = new Date().toISOString().slice(0,10);
+
+            const prBody = [
+              '## Production Promotion',
+              '',
+              `**Triggered by:** @${triggeredBy}`,
+              `**Date:** ${now}`,
+              '',
+              '### Pre-flight checklist',
+              '- [ ] Staging smoke tests passed (`staging-smoke.yml`)',
+              '- [ ] Lighthouse scores met (perf ≥ 80, a11y ≥ 90)',
+              '- [ ] No `governance-block` labels on merged PRs',
+              '- [ ] QA sign-off received',
+              '',
+              '### Release Notes',
+              '',
+              releaseNotes,
+              '',
+              '---',
+              '> Merging this PR deploys to production via Vercel.',
+              '> Branch protection requires **at least one approval** before merge.',
+            ].join('\n');
+
+            // Check if PR already exists
+            const { data: existing } = await github.rest.pulls.list({
+              owner: context.repo.owner, repo: context.repo.repo,
+              head: `${context.repo.owner}:staging`, base: 'main', state: 'open'
+            });
+
+            if (existing.length) {
+              const pr = existing[0];
+              console.log(`PR already exists: ${pr.html_url}`);
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: pr.number,
+                body: `🔄 Production promotion re-triggered by @${triggeredBy} on ${now}.\n\n${releaseNotes}`
+              });
+              core.summary.addRaw(`## ✅ Promotion PR\n\nUsing existing PR: [${pr.html_url}](${pr.html_url})\n\nAwaiting reviewer approval before production deploy.`);
+              await core.summary.write();
+              return;
+            }
+
+            const { data: pr } = await github.rest.pulls.create({
+              owner: context.repo.owner, repo: context.repo.repo,
+              title: `chore: promote staging to production (${now})`,
+              body:  prBody,
+              head:  'staging',
+              base:  'main',
+              draft: false
+            });
+
+            console.log(`Created promotion PR: ${pr.html_url}`);
+
+            core.summary.addHeading('🚀 Production Promotion PR Created');
+            core.summary.addTable([
+              [{data: 'Field', header: true}, {data: 'Value', header: true}],
+              ['PR', pr.html_url],
+              ['Triggered by', triggeredBy],
+              ['Date', now],
+            ]);
+            core.summary.addRaw(`\n\n> **Next step:** Have a team member review and approve the PR above. Merging triggers the Vercel production deployment.`);
+            await core.summary.write();

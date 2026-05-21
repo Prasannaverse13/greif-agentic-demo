@@ -16,13 +16,16 @@ on:
         default: ""
 
 permissions:
-  issues:       write
-  contents:     read
+  issues:        write
+  contents:      read
   pull-requests: write
-  deployments:  read
+  deployments:   read
+  statuses:      write
 
 jobs:
   smoke:
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     runs-on: ubuntu-latest
 
     steps:

@@ -27,6 +27,8 @@ permissions:
 jobs:
   gate_check:
     runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
       - name: Verify human confirmation
         run: |
@@ -41,6 +43,8 @@ jobs:
   promote:
     needs: gate_check
     runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
       - name: Checkout

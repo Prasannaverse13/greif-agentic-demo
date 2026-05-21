@@ -259,7 +259,7 @@ Rules:
   # ── Job 2: Developer Agent ────────────────────────────────────────────────
   developer:
     needs: triage
-    if: needs.triage.outputs.passed == 'true'
+    if: "needs.triage.outputs.passed == 'true'"
     runs-on: ubuntu-latest
     outputs:
       pr_number:   ${{ steps.open_pr.outputs.pr_number }}
@@ -321,7 +321,7 @@ Rules:
 
       # ── Step 3A: Pattern A — footer link (all 3 pages) ─────────────────
       - name: "Pattern A: Insert Investor Relations footer link"
-        if: steps.setup.outputs.change_type == 'footer_link'
+        if: "steps.setup.outputs.change_type == 'footer_link'"
         run: |
           python3 << 'PYEOF'
           import sys
@@ -343,7 +343,7 @@ Rules:
 
       # ── Step 3B: Pattern B — replace first <h1> in index.html ──────────
       - name: "Pattern B: Update hero headline"
-        if: steps.setup.outputs.change_type == 'hero_headline'
+        if: "steps.setup.outputs.change_type == 'hero_headline'"
         env:
           NEW_HEADLINE: ${{ steps.setup.outputs.new_headline }}
         run: |
@@ -373,7 +373,7 @@ Rules:
 
       # ── Step 3C: Pattern C — insert new section (T4.2 bullets support) ─
       - name: "Pattern C: Add new section"
-        if: steps.setup.outputs.change_type == 'add_section'
+        if: "steps.setup.outputs.change_type == 'add_section'"
         env:
           TARGET_PAGE:     ${{ steps.setup.outputs.target_page }}
           SECTION_TITLE:   ${{ steps.setup.outputs.section_title }}
@@ -544,7 +544,7 @@ Rules:
   # ── Job 3: Tester Agent ───────────────────────────────────────────────────
   tester:
     needs: [triage, developer]
-    if: needs.developer.result == 'success' && needs.developer.outputs.pr_number != ''
+    if: "needs.developer.result == 'success' && needs.developer.outputs.pr_number != ''"
     runs-on: ubuntu-latest
     outputs:
       all_passed:  ${{ steps.post_results.outputs.all_passed }}
@@ -573,7 +573,7 @@ Rules:
         uses: actions/github-script@v7
         env:
           PR_NUMBER: ${{ needs.developer.outputs.pr_number }}
-          PROD_URL:  https://greif-agentic-demo.vercel.app
+          PROD_URL:  "https://greif-agentic-demo.vercel.app"
         with:
           script: |
             const prNumber = Number(process.env.PR_NUMBER);
@@ -751,7 +751,7 @@ Rules:
   # ── Job 4: Retry Developer (T5.1 — up to 2 retries on test failure) ───────
   retry_developer:
     needs: [triage, developer, tester]
-    if: always() && needs.tester.result == 'success' && needs.tester.outputs.all_passed == 'false' && needs.developer.outputs.pr_number != ''
+    if: "always() && needs.tester.result == 'success' && needs.tester.outputs.all_passed == 'false' && needs.developer.outputs.pr_number != ''"
     runs-on: ubuntu-latest
 
     steps:
@@ -798,7 +798,7 @@ Rules:
   # ── Job 5: Governance Agent (Gemini-powered diff review) ─────────────────
   governance:
     needs: [triage, developer, tester]
-    if: always() && needs.developer.result == 'success' && needs.developer.outputs.pr_number != ''
+    if: "always() && needs.developer.result == 'success' && needs.developer.outputs.pr_number != ''"
     runs-on: ubuntu-latest
 
     steps:

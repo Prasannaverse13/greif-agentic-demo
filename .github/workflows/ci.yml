@@ -2,15 +2,17 @@ name: CI
 
 on:
   push:
-    branches: ["**"]
+    branches: [main, staging]
   pull_request:
-    branches: [main, master]
+    branches: [main, staging]
 
 jobs:
+  # ── Unit + E2E tests ────────────────────────────────────────────────────
   test:
     runs-on: ubuntu-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -24,5 +26,62 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Run tests
+      - name: Run unit tests (Vitest)
         run: npm test
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Start static server
+        run: npx serve . -l 4173 &
+
+      - name: Wait for server
+        run: npx wait-on http://127.0.0.1:4173 --timeout 30000
+
+      - name: Run E2E tests (Playwright)
+        run: npm run test:e2e
+
+      - name: Upload E2E results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7
+
+  # ── Lighthouse performance + accessibility audit (T1.4) ─────────────────
+  lighthouse:
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Start static server
+        run: npx serve . -l 4173 &
+
+      - name: Wait for server
+        run: npx wait-on http://127.0.0.1:4173 --timeout 30000
+
+      - name: Run Lighthouse CI
+        uses: treosh/lighthouse-ci-action@v12
+        with:
+          urls: |
+            http://127.0.0.1:4173/
+            http://127.0.0.1:4173/about.html
+            http://127.0.0.1:4173/products.html
+          budgetPath: .github/lighthouse-budget.json
+          uploadArtifacts: true
+          temporaryPublicStorage: true
+
+  # ── Lighthouse budget file (written inline, not a step) ─────────────────

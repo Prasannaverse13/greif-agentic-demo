@@ -337,15 +337,21 @@ Rules:
               print('No headline extracted — skipping', file=sys.stderr); sys.exit(0)
           path = 'index.html'
           with open(path, 'r', encoding='utf-8') as f: src = f.read()
-          updated, n = re.subn(
-              r'(<h1(?:\s[^>]*)?>).*?(</h1>)',
-              rf'\g<1>{new_headline}\2',
-              src, count=1, flags=re.DOTALL | re.IGNORECASE
-          )
+          # index.html uses <h2> for hero slides; also try <h1> as fallback
+          updated, n, matched_tag = src, 0, ''
+          for tag in ('h2', 'h1'):
+              updated, n = re.subn(
+                  rf'(<{tag}(?:\s[^>]*)?>).*?(</{tag}>)',
+                  rf'\g<1>{new_headline}\2',
+                  src, count=1, flags=re.DOTALL | re.IGNORECASE
+              )
+              if n > 0:
+                  matched_tag = tag
+                  break
           if n == 0:
-              print('No <h1> found — skipping', file=sys.stderr); sys.exit(0)
+              print('No <h1> or <h2> found in index.html — skipping', file=sys.stderr); sys.exit(0)
           with open(path, 'w', encoding='utf-8') as f: f.write(updated)
-          print(f'Updated <h1> in {path} to: "{new_headline}"')
+          print(f'Updated <{matched_tag}> in {path} to: "{new_headline}"')
           PYEOF
 
       # ── Step 3C: Pattern C — insert new section (T4.2 bullets support) ─
@@ -408,9 +414,9 @@ Rules:
           if git diff --staged --quiet; then
             echo "Working tree clean — nothing to commit"
           else
-            git commit -m "Auto: $env:ISSUE_TITLE"
-            git push origin "$env:BRANCH_NAME"
-            echo "Pushed to $env:BRANCH_NAME"
+            git commit -m "Auto: ${ISSUE_TITLE}"
+            git push origin "${BRANCH_NAME}"
+            echo "Pushed to ${BRANCH_NAME}"
           fi
         shell: bash
 
@@ -728,11 +734,7 @@ Rules:
   # ── Job 4: Retry Developer (T5.1 — up to 2 retries on test failure) ───────
   retry_developer:
     needs: [triage, developer, tester]
-    if: |
-      always() &&
-      needs.tester.result == 'success' &&
-      needs.tester.outputs.all_passed == 'false' &&
-      needs.developer.outputs.pr_number != ''
+    if: always() && needs.tester.result == 'success' && needs.tester.outputs.all_passed == 'false' && needs.developer.outputs.pr_number != ''
     runs-on: ubuntu-latest
 
     steps:
@@ -779,10 +781,7 @@ Rules:
   # ── Job 5: Governance Agent (Gemini-powered diff review) ─────────────────
   governance:
     needs: [triage, developer, tester]
-    if: |
-      always() &&
-      needs.developer.result == 'success' &&
-      needs.developer.outputs.pr_number != ''
+    if: always() && needs.developer.result == 'success' && needs.developer.outputs.pr_number != ''
     runs-on: ubuntu-latest
 
     steps:

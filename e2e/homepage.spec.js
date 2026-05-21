@@ -12,11 +12,12 @@ test.describe("T1.1 – Homepage renders correctly", () => {
     await expect(page).toHaveTitle(/Greif/i);
   });
 
-  test("h1 is visible and non-empty", async ({ page }) => {
+  test("top heading is visible and non-empty (h1 or h2)", async ({ page }) => {
     await page.goto("/");
-    const h1 = page.locator("h1").first();
-    await expect(h1).toBeVisible();
-    const text = await h1.innerText();
+    // index.html uses <h2> for the hero slider, about/products use <h1>
+    const heading = page.locator("h1, h2").first();
+    await expect(heading).toBeVisible();
+    const text = await heading.innerText();
     expect(text.trim().length).toBeGreaterThan(0);
   });
 
@@ -52,10 +53,11 @@ test.describe("T1.2 – All pages return HTTP 200", () => {
       expect(resp?.status()).toBe(200);
     });
 
-    test(`${label} has a visible h1`, async ({ page }) => {
+    test(`${label} has a visible heading`, async ({ page }) => {
       await page.goto(path);
-      const h1 = page.locator("h1").first();
-      await expect(h1).toBeVisible();
+      // homepage uses h2 (hero slides), about/products use h1
+      const heading = page.locator("h1, h2").first();
+      await expect(heading).toBeVisible();
     });
   }
 });
@@ -74,9 +76,9 @@ test.describe("T1.3 – Mobile responsive at 375px", () => {
     expect(bodyWidth).toBeLessThanOrEqual(viewWidth + 5); // 5px tolerance
   });
 
-  test("h1 text is readable (font-size >= 18px)", async ({ page }) => {
+  test("hero heading is readable (font-size >= 18px)", async ({ page }) => {
     await page.goto("/");
-    const fontSize = await page.locator("h1").first().evaluate((el) => {
+    const fontSize = await page.locator("h1, h2").first().evaluate((el) => {
       return parseFloat(getComputedStyle(el).fontSize);
     });
     expect(fontSize).toBeGreaterThanOrEqual(18);

@@ -435,12 +435,43 @@ jobs:
               await github.rest.issues.addLabels({ owner: context.repo.owner, repo: context.repo.repo, issue_number: prNumber, labels: ['auto-generated', `complexity:${complexity}`] });
             } catch (err) {
               if (err.status === 422) {
+                // "No commits between branches" — nothing was changed by the edit scripts
+                const noCommits = (err.message ?? '').toLowerCase().includes('no commits');
+                if (noCommits) {
+                  await github.rest.issues.createComment({
+                    owner: context.repo.owner, repo: context.repo.repo,
+                    issue_number: Number(issueNumber),
+                    body: [
+                      '## 👨‍💻 Agent 2 — Developer',
+                      '',
+                      '⚠️ **No changes were made.** The target element was not found in the HTML file, or the content already matches the request.',
+                      '',
+                      '**Possible reasons:**',
+                      `- The \`${changeType}\` pattern could not locate its anchor in the file`,
+                      '- The file may already contain the requested content',
+                      '',
+                      'Please verify the issue description specifies a clear page and element, then re-open or edit the issue to re-trigger.',
+                    ].join('\n')
+                  });
+                  core.setOutput('pr_number',   '');
+                  core.setOutput('branch_name', branchName);
+                  return;
+                }
+                // PR already exists for this branch — look it up
                 const { data: prs } = await github.rest.pulls.list({ owner: context.repo.owner, repo: context.repo.repo, head: `${context.repo.owner}:${branchName}`, base: 'main', state: 'open' });
                 if (prs.length) { prNumber = prs[0].number; prUrl = prs[0].html_url; }
               } else { throw err; }
             }
 
-            if (!prNumber) throw new Error(`Unable to create or locate PR for branch ${branchName}`);
+            if (!prNumber) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: Number(issueNumber),
+                body: `⚠️ **Developer Agent:** Could not create or find a PR for branch \`${branchName}\`. Please check if the branch exists and retry.`
+              });
+              core.setOutput('pr_number', '');
+              return;
+            }
 
             await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo,
               issue_number: Number(issueNumber),

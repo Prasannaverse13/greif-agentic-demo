@@ -50,6 +50,7 @@ jobs:
       target_page:     ${{ steps.triage.outputs.target_page }}
       triage_tokens:   ${{ steps.triage.outputs.triage_tokens }}
       assigned_agents: ${{ steps.triage.outputs.assigned_agents }}
+      developer_task:  ${{ steps.triage.outputs.developer_task }}
 
     steps:
       - name: Triage issue with Gemini
@@ -202,6 +203,15 @@ jobs:
             await github.rest.issues.addLabels({ owner: context.repo.owner, repo: context.repo.repo, issue_number: Number(issueNumber), labels: ['triaged', `complexity:${complexity}`] });
 
             const bulletsStr = Array.isArray(section_bullets) && section_bullets.length ? section_bullets.join('|||') : '';
+
+            const devTaskMap = {
+              hero_headline: `Edit \`index.html\` hero headline to '${new_headline || 'new headline'}'`,
+              footer_link:   "Add `<a href='/investors'>Investor Relations</a>` to footer in all HTML files",
+              add_section:   `Add \`<section>\` with \`<h2>${section_title || 'New Section'}</h2>\` and bullets to \`${target_page}\``,
+              generic:       `Apply requested changes to \`${target_page}\``,
+            };
+            const developerTask = devTaskMap[edit_type] ?? devTaskMap.generic;
+
             await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: Number(issueNumber),
               body: [
                 '## 🔍 Agent 1 — Triage (Gemini Flash)',
@@ -216,6 +226,10 @@ jobs:
                 `| Assigned to | **${assignedStr}** |`,
                 '',
                 `**Next:** ${assignedStr} will now process this ticket...`,
+                '',
+                '### 📋 Task Assignment',
+                '**Assigned to:** Developer Agent',
+                `**Task:** ${developerTask}`,
               ].join('\n')
             });
 
@@ -231,6 +245,7 @@ jobs:
             core.setOutput('target_page',      target_page  ?? 'index.html');
             core.setOutput('triage_tokens',    String(tokens));
             core.setOutput('assigned_agents',  assignedStr);
+            core.setOutput('developer_task',   developerTask);
 
   # ─────────────────────────────────────────────────────────────────────────
   # AGENT 2 — DEVELOPER  (creates branch, edits HTML, opens PR)
@@ -387,15 +402,17 @@ jobs:
           ISSUE_BODY:    ${{ needs.triage.outputs.issue_body }}
           COMPLEXITY:    ${{ needs.triage.outputs.complexity }}
           BRANCH_NAME:   ${{ steps.setup.outputs.branch_name }}
-          CHANGE_TYPE:   ${{ steps.setup.outputs.change_type }}
+          CHANGE_TYPE:    ${{ steps.setup.outputs.change_type }}
+          DEVELOPER_TASK: ${{ needs.triage.outputs.developer_task }}
         with:
           script: |
-            const issueNumber = process.env.ISSUE_NUMBER;
-            const issueTitle  = process.env.ISSUE_TITLE;
-            const issueBody   = process.env.ISSUE_BODY   ?? '';
-            const complexity  = process.env.COMPLEXITY;
-            const branchName  = process.env.BRANCH_NAME;
-            const changeType  = process.env.CHANGE_TYPE;
+            const issueNumber   = process.env.ISSUE_NUMBER;
+            const issueTitle    = process.env.ISSUE_TITLE;
+            const issueBody     = process.env.ISSUE_BODY      ?? '';
+            const complexity    = process.env.COMPLEXITY;
+            const branchName    = process.env.BRANCH_NAME;
+            const changeType    = process.env.CHANGE_TYPE;
+            const developerTask = process.env.DEVELOPER_TASK  ?? 'Apply requested changes';
 
             const ensureLabel = async (name, color, description) => {
               try { await github.rest.issues.getLabel({ owner: context.repo.owner, repo: context.repo.repo, name }); }
@@ -438,6 +455,12 @@ jobs:
                 `| Draft PR | ${prUrl} |`,
                 '',
                 '**Next:** Tester Agent is running Playwright tests on the Vercel preview...',
+                '',
+                '### 📋 Task Assignment',
+                '**Completed by:** Developer Agent',
+                `**Task:** ${developerTask}`,
+                '**Next task assigned to:** Tester Agent',
+                '**Task:** Run Playwright E2E + Lighthouse on the Vercel preview URL',
               ].join('\n')
             });
             core.setOutput('pr_number',   String(prNumber));
@@ -543,6 +566,12 @@ jobs:
               `| PR | #${prNumber} |`,
               '',
               `**Status:** ${statusIcon} ${allPassed ? 'Tests passed — routing to Governance Agent...' : 'Tests failed — PR labelled for review.'}`,
+              '',
+              '### 📋 Task Assignment',
+              '**Completed by:** Tester Agent',
+              '**Task:** Run Playwright E2E + Lighthouse on the Vercel preview URL',
+              '**Next task assigned to:** Governance Agent',
+              '**Task:** Review PR diff for brand voice, forbidden claims, and greenwashing',
             ].join('\n');
 
             // Post to both the issue AND the PR
@@ -659,6 +688,11 @@ jobs:
                 `| Total Gemini tokens | ${totalTokens.toLocaleString()} (~$${costUsd}) |`,
                 '',
                 '**✅ PR is cleared to merge.** No brand, compliance, or governance violations found.',
+                '',
+                '### 📋 Task Assignment',
+                '**Completed by:** Governance Agent',
+                '**Task:** Review PR diff for brand voice, forbidden claims, and greenwashing',
+                '**Pipeline status:** ✅ All tasks completed. PR ready for human review.',
               ].join('\n');
               await github.rest.issues.addLabels({ owner: context.repo.owner, repo: context.repo.repo, issue_number: prNumber, labels: ['governance-passed'] });
               await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: prNumber, body: govBody });
@@ -675,6 +709,11 @@ jobs:
                 flagTable,
                 '',
                 `_Gemini tokens: ${totalTokens.toLocaleString()} (~$${costUsd})_`,
+                '',
+                '### 📋 Task Assignment',
+                '**Completed by:** Governance Agent',
+                '**Task:** Review PR diff for brand voice, forbidden claims, and greenwashing',
+                '**Pipeline status:** ❌ BLOCKED. Governance violations must be resolved before merge.',
               ].join('\n');
               await github.rest.issues.addLabels({ owner: context.repo.owner, repo: context.repo.repo, issue_number: prNumber, labels: ['governance-block'] });
               await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: prNumber, body: govBody });
